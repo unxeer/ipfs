@@ -82,6 +82,13 @@ You can now refer to the added file in a gateway, like so:
 
   /ipfs/QmaG4FuMqEBnQNn3C8XJ5bpW8kLs7zq2ZXgHptJHbKDDVx/example.jpg
 
+Files imported with 'ipfs add' are protected from GC (implicit '--pin=true'),
+but it is up to you to remember the returned CID to get the data back later.
+
+Passing '--to-files' creates a reference in Files API (MFS), making it easier
+to find it in the future. See 'ipfs files --help' to learn more about using MFS
+for keeping track of added files and directories.
+
 The chunker option, '-s', specifies the chunking strategy that dictates
 how to break files into blocks. Blocks with same content can
 be deduplicated. Different chunking strategies will produce different
@@ -135,7 +142,6 @@ only-hash, and progress/status related flags) will change the final hash.
 		cmds.BoolOption(onlyHashOptionName, "n", "Only chunk and hash - do not write to disk."),
 		cmds.BoolOption(wrapOptionName, "w", "Wrap files with a directory object."),
 		cmds.StringOption(chunkerOptionName, "s", "Chunking algorithm, size-[bytes], rabin-[min]-[avg]-[max] or buzhash").WithDefault("size-262144"),
-		cmds.BoolOption(pinOptionName, "Pin this object when adding.").WithDefault(true),
 		cmds.BoolOption(rawLeavesOptionName, "Use raw blocks for leaf nodes."),
 		cmds.BoolOption(noCopyOptionName, "Add the file using filestore. Implies raw-leaves. (experimental)"),
 		cmds.BoolOption(fstoreCacheOptionName, "Check the filestore for pre-existing blocks. (experimental)"),
@@ -143,7 +149,8 @@ only-hash, and progress/status related flags) will change the final hash.
 		cmds.StringOption(hashOptionName, "Hash function to use. Implies CIDv1 if not sha2-256. (experimental)").WithDefault("sha2-256"),
 		cmds.BoolOption(inlineOptionName, "Inline small blocks into CIDs. (experimental)"),
 		cmds.IntOption(inlineLimitOptionName, "Maximum block size to inline. (experimental)").WithDefault(32),
-		cmds.StringOption(toFilesOptionName, "MFS path to copy the added CID to."),
+		cmds.BoolOption(pinOptionName, "Pin locally to protect added files from garbage collection.").WithDefault(true),
+		cmds.StringOption(toFilesOptionName, "Add reference to Files API (MFS) at the provided path."),
 	},
 	PreRun: func(req *cmds.Request, env cmds.Environment) error {
 		quiet, _ := req.Options[quietOptionName].(bool)
@@ -188,7 +195,7 @@ only-hash, and progress/status related flags) will change the final hash.
 
 		hashFunCode, ok := mh.Names[strings.ToLower(hashFunStr)]
 		if !ok {
-			return fmt.Errorf("unrecognized hash function: %s", strings.ToLower(hashFunStr))
+			return fmt.Errorf("unrecognized hash function: %q", strings.ToLower(hashFunStr))
 		}
 
 		enc, err := cmdenv.GetCidEncoder(req)
@@ -214,16 +221,19 @@ only-hash, and progress/status related flags) will change the final hash.
 				if dirIterator.Err() != nil {
 					return dirIterator.Err()
 				}
-				return fmt.Errorf("no file entry to copy to MFS path %s", toFilesStr)
+				return fmt.Errorf("%s: to-no file entry to copy to MFS path %q", toFilesOptionName, toFilesStr)
 			}
 			srcName := dirIterator.Name()
 			if dirIterator.Next() {
-				return fmt.Errorf("more than one entry to copy to MFS path %s: %s and %s", toFilesStr, srcName, dirIterator.Name())
+				return fmt.Errorf("%s: more than one entry to copy to MFS path %q: %q and %q", toFilesOptionName, toFilesStr, srcName, dirIterator.Name())
 			}
 
+			if toFilesStr == "" {
+				toFilesStr = "/"
+			}
 			toFilesDst, err = checkPath(toFilesStr)
 			if err != nil {
-				return err
+				return fmt.Errorf("%s: %w", toFilesOptionName, err)
 			}
 
 			if toFilesDst[len(toFilesDst)-1] == '/' {
@@ -232,7 +242,7 @@ only-hash, and progress/status related flags) will change the final hash.
 
 			_, err = mfs.Lookup(ipfsNode.FilesRoot, path.Dir(toFilesDst))
 			if err != nil {
-				return fmt.Errorf("MFS destination directory %s does not exist: %s", path.Dir(toFilesDst), err)
+				return fmt.Errorf("%s: MFS destination directory %q does not exist: %w", toFilesOptionName, path.Dir(toFilesDst), err)
 			}
 		}
 
@@ -292,7 +302,7 @@ only-hash, and progress/status related flags) will change the final hash.
 					}
 					err = mfs.PutNode(ipfsNode.FilesRoot, toFilesDst, nodeAdded)
 					if err != nil {
-						err = fmt.Errorf("cannot put node in path %s: %s", toFilesDst, err)
+						err = fmt.Errorf("%s: cannot put node in path %s: %s", toFilesOptionName, toFilesDst, err)
 					}
 				}
 				errCh <- err
